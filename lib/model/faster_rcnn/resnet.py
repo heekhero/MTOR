@@ -30,6 +30,22 @@ def conv3x3(in_planes, out_planes, stride=1):
   return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
            padding=1, bias=False)
 
+class aux_net(nn.Module):
+  def __init__(self, base_feat=512):
+    super(aux_net, self).__init__()
+    self.conv1 = conv3x3(base_feat, 512, stride=2)
+    self.conv2 = conv3x3(512, 128, stride=2)
+    self.conv3 = conv3x3(128, 128, stride=2)
+    self.fc = nn.Linear(128, 4)
+
+  def forward(self, x):
+    x = F.dropout(F.relu(self.conv1(x), inplace=True), training=self.training)
+    x = F.dropout(F.relu(self.conv2(x), inplace=True), training=self.training)
+    x = F.dropout(F.relu(self.conv3(x), inplace=True), training=self.training)
+    x = F.avg_pool2d(x, (x.size(2), x.size(3)))
+    x = x.view(-1, 128)
+    x = self.fc(x)
+    return x
 
 class BasicBlock(nn.Module):
   expansion = 1
@@ -219,7 +235,7 @@ def resnet152(pretrained=False):
 
 class resnet(_fasterRCNN):
   def __init__(self, classes, num_layers=101, pretrained=False, class_agnostic=False):
-    self.model_path = 'data/pretrained_model/resnet101_caffe.pth'
+    self.model_path = '/data/fuminghao/data/model/resnet101_caffe.pth'
     self.dout_base_model = 1024
     self.pretrained = pretrained
     self.class_agnostic = class_agnostic
@@ -241,6 +257,7 @@ class resnet(_fasterRCNN):
     self.RCNN_top = nn.Sequential(resnet.layer4)
 
     self.RCNN_cls_score = nn.Linear(2048, self.n_classes)
+    self.aux_classifier = aux_net(base_feat=1024)
     if self.class_agnostic:
       self.RCNN_bbox_pred = nn.Linear(2048, 4)
     else:

@@ -8,12 +8,12 @@ from torch.autograd import Variable
 import numpy as np
 from model.utils.config import cfg
 from model.rpn.rpn import _RPN
-from model.roi_pooling.modules.roi_pool import _RoIPooling
-from model.roi_crop.modules.roi_crop import _RoICrop
-from model.roi_align.modules.roi_align import RoIAlignAvg
+from torchvision.ops import RoIPool
+from torchvision.ops import RoIAlign
 from model.rpn.proposal_target_layer_cascade import _ProposalTargetLayer
 import time
 import pdb
+import torch.nn.init as init
 from model.utils.net_utils import _smooth_l1_loss, _crop_pool_layer, _affine_grid_gen, _affine_theta
 
 class _fasterRCNN(nn.Module):
@@ -30,21 +30,22 @@ class _fasterRCNN(nn.Module):
         # define rpn
         self.RCNN_rpn = _RPN(self.dout_base_model)
         self.RCNN_proposal_target = _ProposalTargetLayer(self.n_classes)
-        self.RCNN_roi_pool = _RoIPooling(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1.0/16.0)
-        self.RCNN_roi_align = RoIAlignAvg(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1.0/16.0)
+        self.RCNN_roi_align = RoIAlign(output_size=(cfg.POOLING_SIZE, cfg.POOLING_SIZE), spatial_scale=1.0 / 16.0,
+                                       sampling_ratio=2)
+        self.RCNN_roi_pool = RoIPool((cfg.POOLING_SIZE, cfg.POOLING_SIZE), 1.0 / 16.0)
 
         self.grid_size = cfg.POOLING_SIZE * 2 if cfg.CROP_RESIZE_WITH_MAX_POOL else cfg.POOLING_SIZE
-        self.RCNN_roi_crop = _RoICrop()
 
-    def forward(self, im_data, im_info, gt_boxes, num_boxes):
+    def forward(self, im_data, im_info, gt_boxes, num_boxes, aux_label, target=False):
         batch_size = im_data.size(0)
-
-        im_info = im_info.data
-        gt_boxes = gt_boxes.data
-        num_boxes = num_boxes.data
 
         # feed image data to base model to obtain base feature map
         base_feat = self.RCNN_base(im_data)
+
+        aux_out = self.aux_classifier(base_feat)
+        aux_loss = F.cross_entropy(aux_out, aux_label.view(-1).long())
+        if target:
+            return aux_loss
 
         # feed base feature map to RPN to obtain rois
         rois, rpn_loss_cls, rpn_loss_bbox = self.RCNN_rpn(base_feat, im_info, gt_boxes, num_boxes)
@@ -111,7 +112,7 @@ class _fasterRCNN(nn.Module):
         cls_prob = cls_prob.view(batch_size, rois.size(1), -1)
         bbox_pred = bbox_pred.view(batch_size, rois.size(1), -1)
 
-        return rois, cls_prob, bbox_pred, rpn_loss_cls, rpn_loss_bbox, RCNN_loss_cls, RCNN_loss_bbox, rois_label
+        return rois, cls_prob, bbox_pred, rpn_loss_cls, rpn_loss_bbox, RCNN_loss_cls, RCNN_loss_bbox, rois_label, aux_loss
 
     def _init_weights(self):
         def normal_init(m, mean, stddev, truncated=False):
@@ -130,6 +131,16 @@ class _fasterRCNN(nn.Module):
         normal_init(self.RCNN_rpn.RPN_bbox_pred, 0, 0.01, cfg.TRAIN.TRUNCATED)
         normal_init(self.RCNN_cls_score, 0, 0.01, cfg.TRAIN.TRUNCATED)
         normal_init(self.RCNN_bbox_pred, 0, 0.001, cfg.TRAIN.TRUNCATED)
+
+        def init_aux_net(m):
+            classname = m.__class__.__name__
+            if classname.find('Conv') != -1 or classname.find('Linear') != -1:
+                if hasattr(m, 'weight'):
+                    init.normal_(m.weight, 0, 0.01)
+                if hasattr(m, 'bias'):
+                    if m.bias is not None:
+                        init.constant_(m.bias, 0)
+        self.aux_classifier.apply(init_aux_net)
 
     def create_architecture(self):
         self._init_modules()
