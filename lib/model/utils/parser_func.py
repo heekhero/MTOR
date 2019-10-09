@@ -40,7 +40,7 @@ def parse_args():
                         type=str)
     parser.add_argument('--nw', dest='num_workers',
                         help='number of worker to load data',
-                        default=0, type=int)
+                        default=4, type=int)
     parser.add_argument('--cuda', dest='cuda',
                         help='whether use CUDA',
                         type=bool,
@@ -77,7 +77,7 @@ def parse_args():
                         default="sgd", type=str)
     parser.add_argument('--lr', dest='lr',
                         help='starting learning rate',
-                        default=0.001, type=float)
+                        default=0.0001, type=float)
     parser.add_argument('--eta', dest='eta',
                         help='trade-off parameter between detection loss and domain-alignment loss. Used for Car datasets',
                         default=0.1, type=float)
@@ -92,7 +92,7 @@ def parse_args():
                         default=1, type=int)
     parser.add_argument('--r', dest='resume',
                         help='resume checkpoint or not',
-                        default=False, type=bool)
+                        default=True, type=bool)
     parser.add_argument('--checksession', dest='checksession',
                         help='checksession to load model',
                         default=1, type=int)

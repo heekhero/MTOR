@@ -26,7 +26,7 @@ from roi_data_layer.roidb import combined_roidb
 from roi_data_layer.roibatchLoader import roibatchLoader
 from model.utils.config import cfg, cfg_from_file, cfg_from_list, get_output_dir
 from model.utils.net_utils import weights_normal_init, save_net, load_net, \
-    adjust_learning_rate, save_checkpoint, clip_gradient, sampler
+    adjust_learning_rate, save_checkpoint, clip_gradient, sampler, coral
 
 from model.utils.parser_func import parse_args, set_dataset_args
 
@@ -73,12 +73,12 @@ if __name__ == '__main__':
     sampler_batch_t = sampler(train_size_t, args.batch_size)
 
     dataset_s = roibatchLoader(roidb, ratio_list, ratio_index, args.batch_size, \
-                               imdb.num_classes, training=True, target=False)
+                               imdb.num_classes, training=True)
 
     dataloader_s = torch.utils.data.DataLoader(dataset_s, batch_size=args.batch_size,
                                                sampler=sampler_batch, num_workers=args.num_workers)
     dataset_t = roibatchLoader(roidb_t, ratio_list_t, ratio_index_t, args.batch_size, \
-                               imdb.num_classes, training=True, target=True)
+                               imdb.num_classes, training=True)
     dataloader_t = torch.utils.data.DataLoader(dataset_t, batch_size=args.batch_size,
                                                sampler=sampler_batch_t, num_workers=args.num_workers)
     # initilize the tensor holder here.
@@ -149,13 +149,7 @@ if __name__ == '__main__':
 
     if args.resume:
         checkpoint = torch.load(args.load_name)
-        args.session = checkpoint['session']
-        args.start_epoch = checkpoint['epoch']
         fasterRCNN.load_state_dict(checkpoint['model'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        lr = optimizer.param_groups[0]['lr']
-        if 'pooling_mode' in checkpoint.keys():
-            cfg.POOLING_MODE = checkpoint['pooling_mode']
         print("loaded checkpoint %s" % (args.load_name))
 
     if args.mGPUs:
@@ -166,10 +160,12 @@ if __name__ == '__main__':
         from tensorboardX import SummaryWriter
         logger = SummaryWriter("logs")
     count_iter = 0
+    flag = 0
+    min_count=0
     for epoch in range(args.start_epoch, args.max_epochs + 1):
-        # setting to train mode
         fasterRCNN.train()
         loss_temp = 0
+        loss_temp_adv = 0
         start = time.time()
         if epoch % (args.lr_decay_step + 1) == 0:
             adjust_learning_rate(optimizer, args.lr_decay_gamma)
@@ -195,102 +191,176 @@ if __name__ == '__main__':
             im_info.resize_(data_s[1].size()).copy_(data_s[1])
             gt_boxes.resize_(data_s[2].size()).copy_(data_s[2])
             num_boxes.resize_(data_s[3].size()).copy_(data_s[3])
-            aux_label.resize_(data_s[4].size()).copy_(data_s[4])
-
-            # img = np.array(im_data[0].detach().cpu()).transpose((1, 2, 0)).astype(np.uint8)
-            # cv2.imwrite('img/{}_s.jpg'.format(count_iter), img)
-            # img = plt.imread('img/{}_s.jpg'.format(count_iter))
-            # for i in range(gt_boxes[0].size(0)):
-            #     if gt_boxes[0, i, 0] == gt_boxes[0, i, 2]:
-            #         continue
-            #     cv2.rectangle(img,
-            #                   (int(gt_boxes[0, i, 0].item()), int(gt_boxes[0, i, 1].item())),
-            #                   (int(gt_boxes[0, i, 2].item()), int(gt_boxes[0, i, 3].item())), (0, 0, 204), 3)
-            # cv2.imwrite('img/{}_s.jpg'.format(count_iter), img)
 
             fasterRCNN.zero_grad()
-            rois, cls_prob, bbox_pred, \
-            rpn_loss_cls, rpn_loss_box, \
-            RCNN_loss_cls, RCNN_loss_bbox, \
-            rois_label, aux_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, aux_label, target=False)
+            rois_label, rpn_loss_cls, rpn_loss_box, \
+            RCNN_loss_cls_1, RCNN_loss_bbox_1, \
+            RCNN_loss_cls_2, RCNN_loss_bbox_2 = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=0)
             loss = rpn_loss_cls.mean() + rpn_loss_box.mean() \
-                   + RCNN_loss_cls.mean() + RCNN_loss_bbox.mean()
+                   + RCNN_loss_cls_1.mean() + RCNN_loss_bbox_1.mean() \
+                   + RCNN_loss_cls_2.mean() + RCNN_loss_bbox_2.mean()
+
             loss_temp += loss.item()
-
-            im_data.resize_(data_t[0].size()).copy_(data_t[0])
-            im_info.resize_(data_t[1].size()).copy_(data_t[1])
-            gt_boxes.resize_(1, 1, 5).zero_()
-            num_boxes.resize_(1).zero_()
-            # gt_boxes.resize_(data_t[2].size()).copy_(data_t[2])
-            # num_boxes.resize_(data_t[3].size()).copy_(data_t[3])
-            aux_label.resize_(data_t[4].size()).copy_(data_t[4])
-
-            # img = np.array(im_data[0].detach().cpu()).transpose((1, 2, 0)).astype(np.uint8)
-            # cv2.imwrite('img/{}_t.jpg'.format(count_iter), img)
-            # img = plt.imread('img/{}_t.jpg'.format(count_iter))
-            # for i in range(gt_boxes[0].size(0)):
-            #     if gt_boxes[0, i, 0] == gt_boxes[0, i, 2]:
-            #         continue
-            #     cv2.rectangle(img,
-            #                   (int(gt_boxes[0, i, 0].item()), int(gt_boxes[0, i, 1].item())),
-            #                   (int(gt_boxes[0, i, 2].item()), int(gt_boxes[0, i, 3].item())), (0, 0, 204), 3)
-            # cv2.imwrite('img/{}_t.jpg'.format(count_iter), img)
-
-            aux_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, aux_label, target=True)
-
-            loss += (0.5 * aux_loss)
 
             optimizer.zero_grad()
             loss.backward()
+            for group in optimizer.param_groups:
+                torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
             optimizer.step()
+
+
+            for p in fasterRCNN.RCNN_base.parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_rpn.parameters():
+                p.requires_grad = False
+
+
+            if flag == 0:
+                fasterRCNN.zero_grad()
+                rois_label, rpn_loss_cls, rpn_loss_box, \
+                RCNN_loss_cls_1, RCNN_loss_bbox_1, \
+                RCNN_loss_cls_2, RCNN_loss_bbox_2 = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=0)
+
+                loss = rpn_loss_cls.mean() + rpn_loss_box.mean() \
+                       + RCNN_loss_cls_1.mean() + RCNN_loss_bbox_1.mean() \
+                       + RCNN_loss_cls_2.mean() + RCNN_loss_bbox_2.mean()
+
+                im_data.resize_(data_t[0].size()).copy_(data_t[0])
+                im_info.resize_(data_t[1].size()).copy_(data_t[1])
+                gt_boxes.resize_(1, 1, 5).zero_()
+                num_boxes.resize_(1).zero_()
+                # gt_boxes.resize_(data_t[2].size()).copy_(data_t[2])
+                # num_boxes.resize_(data_t[3].size()).copy_(data_t[3])
+
+                adv_cls_loss, adv_bbox_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=1)
+
+                loss -= (adv_cls_loss + adv_bbox_loss) * 0.5
+
+                optimizer.zero_grad()
+                loss.backward()
+                for group in optimizer.param_groups:
+                    torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
+                optimizer.step()
+                flag = 1
+                min_count = 0
+
+
+            for p in fasterRCNN.RCNN_base[2:].parameters():
+                p.requires_grad = True
+            for p in fasterRCNN.RCNN_rpn.parameters():
+                p.requires_grad = True
+            for p in fasterRCNN.RCNN_top_1.parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_top_2.parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_bbox_pred_1.parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_bbox_pred_2.parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_cls_score_1.parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_cls_score_2.parameters():
+                p.requires_grad = False
+
+
+            if flag == 1:
+                fasterRCNN.zero_grad()
+                adv_cls_loss, adv_bbox_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=1)
+
+                loss = (adv_cls_loss + adv_bbox_loss) * 0.5
+
+                optimizer.zero_grad()
+                loss.backward()
+                for group in optimizer.param_groups:
+                    torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
+                optimizer.step()
+                if min_count == 100:
+                    flag = 0
+                min_count += 1
+
+                loss_temp_adv += loss.item()
+
+            # for group in optimizer.param_groups:
+            #     group['lr'] = lr_before
+
+            for p in fasterRCNN.parameters():
+                p.requires_grad = True
+            for p in fasterRCNN.RCNN_base[0].parameters():
+                p.requires_grad = False
+            for p in fasterRCNN.RCNN_base[1].parameters():
+                p.requires_grad = False
 
             if step % args.disp_interval == 0:
                 end = time.time()
                 if step > 0:
                     loss_temp /= (args.disp_interval + 1)
+                    loss_temp_adv /= (args.disp_interval + 1)
 
                 if args.mGPUs:
                     loss_rpn_cls = rpn_loss_cls.mean().item()
                     loss_rpn_box = rpn_loss_box.mean().item()
-                    loss_rcnn_cls = RCNN_loss_cls.mean().item()
-                    loss_rcnn_box = RCNN_loss_bbox.mean().item()
+                    loss_rcnn_cls_1 = RCNN_loss_cls_1.mean().item()
+                    loss_rcnn_box_1 = RCNN_loss_bbox_1.mean().item()
                     fg_cnt = torch.sum(rois_label.data.ne(0))
                     bg_cnt = rois_label.data.numel() - fg_cnt
                 else:
                     loss_rpn_cls = rpn_loss_cls.item()
                     loss_rpn_box = rpn_loss_box.item()
-                    loss_rcnn_cls = RCNN_loss_cls.item()
-                    loss_rcnn_box = RCNN_loss_bbox.item()
+                    loss_rcnn_cls_1 = RCNN_loss_cls_1.item()
+                    loss_rcnn_box_1 = RCNN_loss_bbox_1.item()
+                    loss_rcnn_cls_2 = RCNN_loss_cls_2.item()
+                    loss_rcnn_box_2 = RCNN_loss_bbox_2.item()
                     fg_cnt = torch.sum(rois_label.data.ne(0))
                     bg_cnt = rois_label.data.numel() - fg_cnt
-                    aux_loss = aux_loss.item()
+                    adv_cls_loss = adv_cls_loss.item()
+                    adv_bbox_loss = adv_bbox_loss.item()
 
-                print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, lr: %.2e" \
-                      % (args.session, epoch, step, iters_per_epoch, loss_temp, lr))
+                print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, loss adv: %.4f, lr: %.2e" \
+                      % (args.session, epoch, step, iters_per_epoch, loss_temp, loss_temp_adv, lr))
                 print("\t\t\tfg/bg=(%d/%d), time cost: %f" % (fg_cnt, bg_cnt, end - start))
                 print(
-                    "\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f aux loss: %.4f " \
-                    % (loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box, aux_loss))
+                    "\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls_1: %.4f, rcnn_box_1 %.4f, rcnn_cls_2 %.4f, rcnn_box_2 %.4f, adv cls loss %.4f, adv bbox loss %.4f" \
+                    % (loss_rpn_cls, loss_rpn_box, loss_rcnn_cls_1, loss_rcnn_box_1, loss_rcnn_cls_2, loss_rcnn_box_2, adv_cls_loss, adv_bbox_loss))
+
+                # print("\t\t\ttime cost: %f" % (end - start))
+                # print(
+                #     "\t\t\tadv cls loss %.4f, adv bbox loss %.4f" \
+                #     % (adv_cls_loss, adv_bbox_loss))
+
                 if args.use_tfboard:
                     info = {
                         'loss': loss_temp,
+                        'loss_adv': loss_temp_adv,
                         'loss_rpn_cls': loss_rpn_cls,
                         'loss_rpn_box': loss_rpn_box,
-                        'loss_rcnn_cls': loss_rcnn_cls,
-                        'loss_rcnn_box': loss_rcnn_box,
-                        'aux_loss':aux_loss
+                        'loss_rcnn_cls_1': loss_rcnn_cls_1,
+                        'loss_rcnn_box_1': loss_rcnn_box_1,
+                        'loss_rcnn_cls_2': loss_rcnn_cls_2,
+                        'loss_rcnn_box_2': loss_rcnn_box_2,
+                        'adv_cls_loss':adv_cls_loss,
+                        'adv_bbox_loss':adv_bbox_loss
                     }
-                    logger.add_scalars("logs_s_{}/self-faster-rcnn".format(args.session), info,
+                    logger.add_scalars("logs_s_{}/mcd-PT".format(args.session), info,
                                        (epoch - 1) * iters_per_epoch + step)
 
                 loss_temp = 0
+                loss_temp_adv = 0
                 start = time.time()
+
+            if step % 1000 == 0:
+                save_name = os.path.join(output_dir,
+                                         'mcd_pure_target_{}_epoch_{}_step_{}.pth'.format(args.dataset, epoch, step))
+                save_checkpoint({
+                    'session': args.session,
+                    'epoch': epoch + 1,
+                    'model': fasterRCNN.module.state_dict() if args.mGPUs else fasterRCNN.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'pooling_mode': cfg.POOLING_MODE,
+                    'class_agnostic': args.class_agnostic,
+                }, save_name)
+                print('save model: {}'.format(save_name))
         save_name = os.path.join(output_dir,
-                                 'globallocal_target_{}_eta_{}_local_context_{}_global_context_{}_gamma_{}_session_{}_epoch_{}_step_{}.pth'.format(
-                                     args.dataset_t,args.eta,
-                                     args.lc, args.gc, args.gamma,
-                                     args.session, epoch,
-                                     step))
+                                 'mcd_pure_target_{}_epoch_{}.pth'.format(args.dataset, epoch))
         save_checkpoint({
             'session': args.session,
             'epoch': epoch + 1,

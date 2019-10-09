@@ -92,7 +92,6 @@ if __name__ == '__main__':
     im_info = torch.FloatTensor(1)
     num_boxes = torch.LongTensor(1)
     gt_boxes = torch.FloatTensor(1)
-    aux_label = torch.FloatTensor(1)
 
     # ship to cuda
     if args.cuda:
@@ -100,14 +99,12 @@ if __name__ == '__main__':
         im_info = im_info.cuda()
         num_boxes = num_boxes.cuda()
         gt_boxes = gt_boxes.cuda()
-        aux_label = aux_label.cuda()
 
     # make variable
     im_data = Variable(im_data)
     im_info = Variable(im_info)
     num_boxes = Variable(num_boxes)
     gt_boxes = Variable(gt_boxes)
-    aux_label = Variable(aux_label)
 
     if args.cuda:
         cfg.CUDA = True
@@ -127,7 +124,7 @@ if __name__ == '__main__':
 
     output_dir = get_output_dir(imdb, save_name)
     dataset = roibatchLoader(roidb, ratio_list, ratio_index, 1, \
-                             imdb.num_classes, training=False, normalize=False, target=False)
+                             imdb.num_classes, training=False, normalize=False)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1,
                                              shuffle=False, num_workers=0,
                                              pin_memory=True)
@@ -147,17 +144,15 @@ if __name__ == '__main__':
         im_info.resize_(data[1].size()).copy_(data[1])
         gt_boxes.resize_(data[2].size()).copy_(data[2])
         num_boxes.resize_(data[3].size()).copy_(data[3])
-        aux_label.resize_(data[4].size()).copy_(data[4])
 
         det_tic = time.time()
         rois, cls_prob, bbox_pred, \
         rpn_loss_cls, rpn_loss_box, \
         RCNN_loss_cls, RCNN_loss_bbox, \
-        rois_label, _ = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, aux_label)
+        rois_label = fasterRCNN(im_data, im_info, gt_boxes, num_boxes)
 
         scores = cls_prob.data
         boxes = rois.data[:, :, 1:5]
-        path = data[4]
 
         if cfg.TEST.BBOX_REG:
             # Apply bounding-box regression deltas

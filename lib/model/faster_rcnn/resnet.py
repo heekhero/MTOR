@@ -12,6 +12,7 @@ from torch.autograd import Variable
 import math
 import torch.utils.model_zoo as model_zoo
 import pdb
+import torch.nn.init as init
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
        'resnet152']
@@ -254,14 +255,18 @@ class resnet(_fasterRCNN):
     self.RCNN_base = nn.Sequential(resnet.conv1, resnet.bn1,resnet.relu,
       resnet.maxpool,resnet.layer1,resnet.layer2,resnet.layer3)
 
-    self.RCNN_top = nn.Sequential(resnet.layer4)
+    self.RCNN_top_1 = nn.Sequential(resnet.layer4)
+    self.RCNN_top_2 = nn.Sequential(resnet.layer4)
 
-    self.RCNN_cls_score = nn.Linear(2048, self.n_classes)
-    self.aux_classifier = aux_net(base_feat=1024)
+    self.RCNN_cls_score_1 = nn.Linear(2048, self.n_classes)
+    self.RCNN_cls_score_2 = nn.Linear(2048, self.n_classes)
+
     if self.class_agnostic:
-      self.RCNN_bbox_pred = nn.Linear(2048, 4)
+      self.RCNN_bbox_pred_1 = nn.Linear(2048, 4)
+      self.RCNN_bbox_pred_2 = nn.Linear(2048, 4)
     else:
-      self.RCNN_bbox_pred = nn.Linear(2048, 4 * self.n_classes)
+      self.RCNN_bbox_pred_1 = nn.Linear(2048, 4 * self.n_classes)
+      self.RCNN_bbox_pred_2 = nn.Linear(2048, 4 * self.n_classes)
 
     # Fix blocks
     for p in self.RCNN_base[0].parameters(): p.requires_grad=False
@@ -279,9 +284,18 @@ class resnet(_fasterRCNN):
       classname = m.__class__.__name__
       if classname.find('BatchNorm') != -1:
         for p in m.parameters(): p.requires_grad=False
+    def normal_init(m):
+      classname = m.__class__.__name__
+      if classname.find('Linear') != -1 or classname.find('Conv') != -1:
+        if hasattr(m, 'weight') and m.weight is not None:
+          init.normal_(m.weight, 0, 0.01)
+        if hasattr(m, 'bias') and m.bias is not None:
+          init.constant_(m.bias, 0)
 
     self.RCNN_base.apply(set_bn_fix)
-    self.RCNN_top.apply(set_bn_fix)
+    self.RCNN_top_1.apply(set_bn_fix)
+    self.RCNN_top_2.apply(set_bn_fix)
+    self.RCNN_top_2.apply(normal_init)
 
   def train(self, mode=True):
     # Override train so that the training mode is set as we want
@@ -298,8 +312,14 @@ class resnet(_fasterRCNN):
           m.eval()
 
       self.RCNN_base.apply(set_bn_eval)
-      self.RCNN_top.apply(set_bn_eval)
+      self.RCNN_top_1.apply(set_bn_eval)
+      self.RCNN_top_2.apply(set_bn_eval)
 
-  def _head_to_tail(self, pool5):
-    fc7 = self.RCNN_top(pool5).mean(3).mean(2)
+  def _head_to_tail(self, pool5, tar=0):
+    if tar == 0:
+      fc7 = self.RCNN_top_1(pool5).mean(3).mean(2)
+    elif tar == 1:
+      fc7 = self.RCNN_top_2(pool5).mean(3).mean(2)
+    else:
+      raise NotImplementedError
     return fc7

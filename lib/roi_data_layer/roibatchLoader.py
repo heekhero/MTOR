@@ -21,8 +21,7 @@ import time
 import pdb
 
 class roibatchLoader(data.Dataset):
-  def __init__(self, roidb, ratio_list, ratio_index, batch_size, num_classes, training=True, normalize=None, target=False):
-    self._target = target
+  def __init__(self, roidb, ratio_list, ratio_index, batch_size, num_classes, training=True, normalize=None):
     self._roidb = roidb
     self._num_classes = num_classes
     # we make the height of image consistent to trim_height, trim_width
@@ -204,25 +203,15 @@ class roibatchLoader(data.Dataset):
         padding_data = padding_data.permute(2, 0, 1).contiguous()
         im_info = im_info.view(3)
 
-        aux_label = 0
-        if self._target:
-            w = padding_data.size(2)
-            h = padding_data.size(1)
-            padding_data, aux_label = roate_tensor(padding_data)
-            gt_boxes_padding = rotate_boxes(gt_boxes_padding, aux_label, w, h)
-            im_info = torch.tensor(data=[[padding_data.size(1), padding_data.size(2), im_info[2]]], dtype=torch.float)
-        aux_label = torch.tensor(data=aux_label, dtype=torch.long)
-
-        return padding_data, im_info, gt_boxes_padding, num_boxes, aux_label
+        return padding_data, im_info, gt_boxes_padding, num_boxes
     else:
         data = data.permute(0, 3, 1, 2).contiguous().view(3, data_height, data_width)
         im_info = im_info.view(3)
 
         gt_boxes = torch.FloatTensor([1,1,1,1,1])
         num_boxes = 0
-        aux_label = 0
 
-        return data, im_info, gt_boxes, num_boxes, aux_label
+        return data, im_info, gt_boxes, num_boxes
 
   def __len__(self):
     return len(self._roidb)
