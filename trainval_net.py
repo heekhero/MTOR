@@ -159,9 +159,13 @@ if __name__ == '__main__':
     if args.use_tfboard:
         from tensorboardX import SummaryWriter
         logger = SummaryWriter("logs")
+
     count_iter = 0
     flag = 0
+    loss_avg = []
+    avg_count = 0
     min_count=0
+
     for epoch in range(args.start_epoch, args.max_epochs + 1):
         fasterRCNN.train()
         loss_temp = 0
@@ -192,7 +196,6 @@ if __name__ == '__main__':
             gt_boxes.resize_(data_s[2].size()).copy_(data_s[2])
             num_boxes.resize_(data_s[3].size()).copy_(data_s[3])
 
-            fasterRCNN.zero_grad()
             rois_label, rpn_loss_cls, rpn_loss_box, \
             RCNN_loss_cls_1, RCNN_loss_bbox_1, \
             RCNN_loss_cls_2, RCNN_loss_bbox_2 = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=0)
@@ -208,7 +211,6 @@ if __name__ == '__main__':
                 torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
             optimizer.step()
 
-
             for p in fasterRCNN.RCNN_base.parameters():
                 p.requires_grad = False
             for p in fasterRCNN.RCNN_rpn.parameters():
@@ -216,7 +218,6 @@ if __name__ == '__main__':
 
 
             if flag == 0:
-                fasterRCNN.zero_grad()
                 rois_label, rpn_loss_cls, rpn_loss_box, \
                 RCNN_loss_cls_1, RCNN_loss_bbox_1, \
                 RCNN_loss_cls_2, RCNN_loss_bbox_2 = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=0)
@@ -234,15 +235,16 @@ if __name__ == '__main__':
 
                 adv_cls_loss, adv_bbox_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=1)
 
-                loss -= (adv_cls_loss + adv_bbox_loss) * 0.5
+                loss -= (adv_cls_loss + adv_bbox_loss) * 0.1
 
                 optimizer.zero_grad()
                 loss.backward()
                 for group in optimizer.param_groups:
                     torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
                 optimizer.step()
-                flag = 1
+                print('{} minimum iters before maximum iter'.format(min_count))
                 min_count = 0
+                flag = 1
 
 
             for p in fasterRCNN.RCNN_base[2:].parameters():
@@ -264,19 +266,36 @@ if __name__ == '__main__':
 
 
             if flag == 1:
-                fasterRCNN.zero_grad()
+                min_count += 1
                 adv_cls_loss, adv_bbox_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=1)
 
-                loss = (adv_cls_loss + adv_bbox_loss) * 0.5
+                loss = (adv_cls_loss + adv_bbox_loss) * 0.1
+
+                def get_average(list):
+                    sum = 0.0
+                    for item in list:
+                        sum += item
+                    return sum / len(list)
+
+                loss_avg.append(loss.item())
+                if len(loss_avg) > 20:
+                    mean_before = get_average(loss_avg[:-1])
+                    mean_after = get_average(loss_avg[1:])
+                    if mean_after <= mean_before:
+                        avg_count += 1
+                        if avg_count == 10:
+                            flag = 0
+                            avg_count = 0
+                    else:
+                        avg_count = 0
+                    loss_avg.pop(0)
+
 
                 optimizer.zero_grad()
                 loss.backward()
                 for group in optimizer.param_groups:
                     torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
                 optimizer.step()
-                if min_count == 100:
-                    flag = 0
-                min_count += 1
 
                 loss_temp_adv += loss.item()
 
