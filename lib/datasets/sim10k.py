@@ -20,6 +20,8 @@ import uuid
 import scipy.io as sio
 import xml.etree.ElementTree as ET
 import pickle
+import logging
+
 from .imdb import imdb
 from .imdb import ROOT_DIR
 from . import ds_utils
@@ -37,7 +39,15 @@ except NameError:
     xrange = range  # Python 3
 
 # <<<< obsolete
-
+# logger = logging.getLogger('logger')
+# handler = logging.FileHandler(os.path.abspath(os.path.join(__file__, '..', '..', '..', 'info_car.out')))
+# logger.setLevel(logging.INFO)
+# handler.setLevel(logging.INFO)
+#
+# formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s')
+# handler.setFormatter(formatter)
+#
+# logger.addHandler(handler)
 
 class sim10k(imdb):
     def __init__(self, image_set,  devkit_path=None):
@@ -50,7 +60,7 @@ class sim10k(imdb):
         self._classes = ('__background__',  # always index 0
                          'car')
         self._class_to_ind = dict(zip(self.classes, xrange(self.num_classes)))
-        self._image_ext = ''
+        self._image_ext = '.jpg'
         self._image_index = self._load_image_set_index()
         # Default to roidb handler
         # self._roidb_handler = self.selective_search_roidb
@@ -297,7 +307,7 @@ class sim10k(imdb):
                                        dets[k, 0] + 1, dets[k, 1] + 1,
                                        dets[k, 2] + 1, dets[k, 3] + 1))
 
-    def _do_python_eval(self, output_dir='output'):
+    def _do_python_eval(self, output_dir='output', epoch=0, step=0):
         annopath = os.path.join(
             self._devkit_path,
 
@@ -325,6 +335,8 @@ class sim10k(imdb):
                 use_07_metric=use_07_metric)
             aps += [ap]
             print('AP for {} = {:.4f}'.format(cls, ap))
+            logger.info('Epoch : {}  Step : {}  AP for {} : {:.4}'.format(epoch, step, cls, ap.item()))
+
             with open(os.path.join(output_dir, cls + '_pr.pkl'), 'wb') as f:
                 pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
         print('Mean AP = {:.4f}'.format(np.mean(aps)))
@@ -357,9 +369,9 @@ class sim10k(imdb):
         print('Running:\n{}'.format(cmd))
         status = subprocess.call(cmd, shell=True)
 
-    def evaluate_detections(self, all_boxes, output_dir):
+    def evaluate_detections(self, all_boxes, output_dir, epoch, step):
         self._write_voc_results_file(all_boxes)
-        self._do_python_eval(output_dir)
+        self._do_python_eval(output_dir, epoch=epoch, step=step)
         if self.config['matlab_eval']:
             self._do_matlab_eval(output_dir)
         if self.config['cleanup']:
@@ -376,11 +388,3 @@ class sim10k(imdb):
         else:
             self.config['use_salt'] = True
             self.config['cleanup'] = True
-
-
-if __name__ == '__main__':
-    d = pascal_voc('trainval', '2007')
-    res = d.roidb
-    from IPython import embed;
-
-    embed()

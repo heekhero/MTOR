@@ -32,7 +32,7 @@ def im_list_to_blob(ims):
 
     return blob
 
-def prep_im_for_blob(im, pixel_means, target_size, max_size):
+def prep_im_for_blob(im, pixel_means, target_size, target=False):
     """Mean subtract and scale an image for use in a blob."""
 
     im = im.astype(np.float32, copy=False)
@@ -48,5 +48,10 @@ def prep_im_for_blob(im, pixel_means, target_size, max_size):
     # im = imresize(im, im_scale)
     im = cv2.resize(im, None, None, fx=im_scale, fy=im_scale,
                     interpolation=cv2.INTER_LINEAR)
-
+    if target:
+        s = np.clip((im + np.random.uniform(0, 30)), 0, 255)
+        t = np.expand_dims(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), axis=2)
+        t = np.concatenate((t, t, t), axis=-1)
+        return s, t, im_scale
     return im, im_scale
+

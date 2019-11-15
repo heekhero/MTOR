@@ -8,33 +8,32 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
-import numpy as np
-import pprint
-import pdb
-import time
 import _init_paths
-import torch.nn.functional as F
-from matplotlib import pyplot as plt
-import cv2
+import os
+import pdb
+import pprint
+import subprocess
+import time
 
-
+import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.autograd import Variable
-import torch.nn as nn
-from roi_data_layer.roidb import combined_roidb
-from roi_data_layer.roibatchLoader import roibatchLoader
-from model.utils.config import cfg, cfg_from_file, cfg_from_list, get_output_dir
-from model.utils.net_utils import weights_normal_init, save_net, load_net, \
-    adjust_learning_rate, save_checkpoint, clip_gradient, sampler, coral
 
+from model.utils.config import cfg, cfg_from_file, cfg_from_list
+from model.utils.net_utils import adjust_learning_rate, save_checkpoint, sampler, relation_matrix, guide_matrix, zero_params
 from model.utils.parser_func import parse_args, set_dataset_args
+from roi_data_layer.roibatchLoader import roibatchLoader
+from roi_data_layer.roidb import combined_roidb
+
+os.environ['CUDA_VISIBLE_DEVICES']='1'
 
 if __name__ == '__main__':
 
     torch.manual_seed(100)
     args = parse_args()
 
+    cfg.TRAIN.TEACHER_ROI_THRESHOLD = args.emma
     print('Called with args:')
     print(args)
     args = set_dataset_args(args)
@@ -73,16 +72,18 @@ if __name__ == '__main__':
     sampler_batch_t = sampler(train_size_t, args.batch_size)
 
     dataset_s = roibatchLoader(roidb, ratio_list, ratio_index, args.batch_size, \
-                               imdb.num_classes, training=True)
+                               imdb.num_classes, training=True, target=False)
 
     dataloader_s = torch.utils.data.DataLoader(dataset_s, batch_size=args.batch_size,
                                                sampler=sampler_batch, num_workers=args.num_workers)
     dataset_t = roibatchLoader(roidb_t, ratio_list_t, ratio_index_t, args.batch_size, \
-                               imdb.num_classes, training=True)
+                               imdb.num_classes, training=True, target=True)
     dataloader_t = torch.utils.data.DataLoader(dataset_t, batch_size=args.batch_size,
                                                sampler=sampler_batch_t, num_workers=args.num_workers)
     # initilize the tensor holder here.
     im_data = torch.FloatTensor(1)
+    s = torch.FloatTensor(1)
+    t = torch.FloatTensor(1)
     im_info = torch.FloatTensor(1)
     num_boxes = torch.LongTensor(1)
     gt_boxes = torch.FloatTensor(1)
@@ -90,6 +91,8 @@ if __name__ == '__main__':
     # ship to cuda
     if args.cuda:
         im_data = im_data.cuda()
+        s = s.cuda()
+        t = t.cuda()
         im_info = im_info.cuda()
         num_boxes = num_boxes.cuda()
         gt_boxes = gt_boxes.cuda()
@@ -97,6 +100,8 @@ if __name__ == '__main__':
 
     # make variable
     im_data = Variable(im_data)
+    s = Variable(s)
+    t = Variable(t)
     im_info = Variable(im_info)
     num_boxes = Variable(num_boxes)
     gt_boxes = Variable(gt_boxes)
@@ -105,30 +110,24 @@ if __name__ == '__main__':
     if args.cuda:
         cfg.CUDA = True
 
-    # initilize the network here.
-    from model.faster_rcnn.vgg16 import vgg16
-    from model.faster_rcnn.resnet import resnet
+    from model.faster_rcnn.resnet_teacher import resnet_teacher
+    from model.faster_rcnn.resnet_student import resnet_student
 
-    if args.net == 'vgg16':
-        fasterRCNN = vgg16(imdb.classes, pretrained=True, class_agnostic=args.class_agnostic)
-    elif args.net == 'res101':
-        fasterRCNN = resnet(imdb.classes, 101, pretrained=True, class_agnostic=args.class_agnostic)
-    elif args.net == 'res50':
-        fasterRCNN = resnet(imdb.classes, 50, pretrained=True, class_agnostic=args.class_agnostic)
-
+    if args.net == 'res101':
+        teacher = resnet_teacher(imdb.classes, 101, pretrained=True, class_agnostic=args.class_agnostic)
+        student = resnet_student(imdb.classes, 101, pretrained=True, class_agnostic=args.class_agnostic)
     else:
         print("network is not defined")
         pdb.set_trace()
 
-    fasterRCNN.create_architecture()
+    teacher.create_architecture()
+    student.create_architecture()
 
     lr = cfg.TRAIN.LEARNING_RATE
     lr = args.lr
-    # tr_momentum = cfg.TRAIN.MOMENTUM
-    # tr_momentum = args.momentum
 
     params = []
-    for key, value in dict(fasterRCNN.named_parameters()).items():
+    for key, value in dict(student.named_parameters()).items():
         if value.requires_grad:
             if 'bias' in key:
                 params += [{'params': [value], 'lr': lr * (cfg.TRAIN.DOUBLE_BIAS + 1), \
@@ -145,15 +144,15 @@ if __name__ == '__main__':
         optimizer = torch.optim.SGD(params, momentum=cfg.TRAIN.MOMENTUM)
 
     if args.cuda:
-        fasterRCNN.cuda()
+        teacher = teacher.cuda()
+        student = student.cuda()
 
     if args.resume:
         checkpoint = torch.load(args.load_name)
-        fasterRCNN.load_state_dict(checkpoint['model'])
+        student.load_state_dict(checkpoint['model'])
+        teacher.load_state_dict(checkpoint['model'])
         print("loaded checkpoint %s" % (args.load_name))
 
-    if args.mGPUs:
-        fasterRCNN = nn.DataParallel(fasterRCNN)
     iters_per_epoch = int(10000 / args.batch_size)
 
     if args.use_tfboard:
@@ -161,15 +160,19 @@ if __name__ == '__main__':
         logger = SummaryWriter("logs")
 
     count_iter = 0
-    flag = 0
-    loss_avg = []
-    avg_count = 0
-    min_count=0
+    loss_temp = 0
+    flag= False
+
+    for p in teacher.parameters():
+        p.requires_grad = False
+
+    # teacher.apply(zero_params)
+
+    modules = dict(teacher.named_modules())
 
     for epoch in range(args.start_epoch, args.max_epochs + 1):
-        fasterRCNN.train()
-        loss_temp = 0
-        loss_temp_adv = 0
+        student.train()
+        teacher.train()
         start = time.time()
         if epoch % (args.lr_decay_step + 1) == 0:
             adjust_learning_rate(optimizer, args.lr_decay_gamma)
@@ -187,7 +190,7 @@ if __name__ == '__main__':
                 data_t = next(data_iter_t)
             except:
                 data_iter_t = iter(dataloader_t)
-                data_t = next(data_iter_t)
+                data_t = next (data_iter_t)
 
             count_iter += 1
 
@@ -196,199 +199,111 @@ if __name__ == '__main__':
             gt_boxes.resize_(data_s[2].size()).copy_(data_s[2])
             num_boxes.resize_(data_s[3].size()).copy_(data_s[3])
 
-            rois_label, rpn_loss_cls, rpn_loss_box, \
-            RCNN_loss_cls_1, RCNN_loss_bbox_1, \
-            RCNN_loss_cls_2, RCNN_loss_bbox_2 = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=0)
+            rois_label, rpn_loss_cls, rpn_loss_box, RCNN_loss_cls, RCNN_loss_bbox = student(im_data, im_info, gt_boxes, num_boxes)
             loss = rpn_loss_cls.mean() + rpn_loss_box.mean() \
-                   + RCNN_loss_cls_1.mean() + RCNN_loss_bbox_1.mean() \
-                   + RCNN_loss_cls_2.mean() + RCNN_loss_bbox_2.mean()
-
+                   + RCNN_loss_cls.mean() + RCNN_loss_bbox.mean()
             loss_temp += loss.item()
 
+
+            s.resize_(data_t[0].size()).copy_(data_t[0])
+            t.resize_(data_t[1].size()).copy_(data_t[1])
+            im_info.resize_(data_t[2].size()).copy_(data_t[2])
+            gt_boxes.resize_(1, 1, 5).zero_()
+            num_boxes.resize_(1).zero_()
+
+            # if epoch > 2:
+            rois_t, f_t, p_t = teacher(t, im_info, gt_boxes, num_boxes)
+            if rois_t.size(1) != 0 and rois_t.size(1) < 100:
+                f_s, p_s = student(s, im_info, gt_boxes, num_boxes, t_rois = rois_t)
+
+                RCL = F.mse_loss(p_s, p_t.squeeze(0))
+
+                emma_s = relation_matrix(f_s)
+                emma_t = relation_matrix(f_t)
+
+                EGL = F.mse_loss(emma_s, emma_t)
+
+                M = guide_matrix(p_t)
+
+                AGL = torch.sum((1 - emma_s) * M) / torch.sum(M)
+
+                loss += RCL + EGL + AGL
             optimizer.zero_grad()
             loss.backward()
-            for group in optimizer.param_groups:
-                torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
             optimizer.step()
 
-            for p in fasterRCNN.RCNN_base.parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_rpn.parameters():
-                p.requires_grad = False
-
-
-            if flag == 0:
-                rois_label, rpn_loss_cls, rpn_loss_box, \
-                RCNN_loss_cls_1, RCNN_loss_bbox_1, \
-                RCNN_loss_cls_2, RCNN_loss_bbox_2 = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=0)
-
-                loss = rpn_loss_cls.mean() + rpn_loss_box.mean() \
-                       + RCNN_loss_cls_1.mean() + RCNN_loss_bbox_1.mean() \
-                       + RCNN_loss_cls_2.mean() + RCNN_loss_bbox_2.mean()
-
-                im_data.resize_(data_t[0].size()).copy_(data_t[0])
-                im_info.resize_(data_t[1].size()).copy_(data_t[1])
-                gt_boxes.resize_(1, 1, 5).zero_()
-                num_boxes.resize_(1).zero_()
-                # gt_boxes.resize_(data_t[2].size()).copy_(data_t[2])
-                # num_boxes.resize_(data_t[3].size()).copy_(data_t[3])
-
-                adv_cls_loss, adv_bbox_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=1)
-
-                loss -= (adv_cls_loss + adv_bbox_loss) * 0.1
-
-                optimizer.zero_grad()
-                loss.backward()
-                for group in optimizer.param_groups:
-                    torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
-                optimizer.step()
-                print('{} minimum iters before maximum iter'.format(min_count))
-                min_count = 0
-                flag = 1
-
-
-            for p in fasterRCNN.RCNN_base[2:].parameters():
-                p.requires_grad = True
-            for p in fasterRCNN.RCNN_rpn.parameters():
-                p.requires_grad = True
-            for p in fasterRCNN.RCNN_top_1.parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_top_2.parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_bbox_pred_1.parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_bbox_pred_2.parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_cls_score_1.parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_cls_score_2.parameters():
-                p.requires_grad = False
-
-
-            if flag == 1:
-                min_count += 1
-                adv_cls_loss, adv_bbox_loss = fasterRCNN(im_data, im_info, gt_boxes, num_boxes, target=1)
-
-                loss = (adv_cls_loss + adv_bbox_loss) * 0.1
-
-                def get_average(list):
-                    sum = 0.0
-                    for item in list:
-                        sum += item
-                    return sum / len(list)
-
-                loss_avg.append(loss.item())
-                if len(loss_avg) > 20:
-                    mean_before = get_average(loss_avg[:-1])
-                    mean_after = get_average(loss_avg[1:])
-                    if mean_after <= mean_before:
-                        avg_count += 1
-                        if avg_count == 10:
-                            flag = 0
-                            avg_count = 0
-                    else:
-                        avg_count = 0
-                    loss_avg.pop(0)
-
-
-                optimizer.zero_grad()
-                loss.backward()
-                for group in optimizer.param_groups:
-                    torch.nn.utils.clip_grad_norm_(group['params'], max_norm=20)
-                optimizer.step()
-
-                loss_temp_adv += loss.item()
-
-            # for group in optimizer.param_groups:
-            #     group['lr'] = lr_before
-
-            for p in fasterRCNN.parameters():
-                p.requires_grad = True
-            for p in fasterRCNN.RCNN_base[0].parameters():
-                p.requires_grad = False
-            for p in fasterRCNN.RCNN_base[1].parameters():
-                p.requires_grad = False
+            for name, module in dict(student.named_modules()).items():
+                op_mod = modules[name]
+                # if hasattr(op_mod, 'weight') and op_mod.weight is not None:
+                #     op_mod.weight.data = 0.9 * op_mod.weight.data + 0.1 * module.weight.data
+                if len(op_mod._parameters) != 0:
+                    for k in op_mod._parameters:
+                        if op_mod._parameters[k] is not None:
+                            op_mod._parameters[k].data = args.eam * op_mod._parameters[k].data + (1 - args.eam) * \
+                                                         module._parameters[k].data
 
             if step % args.disp_interval == 0:
                 end = time.time()
                 if step > 0:
                     loss_temp /= (args.disp_interval + 1)
-                    loss_temp_adv /= (args.disp_interval + 1)
 
                 if args.mGPUs:
                     loss_rpn_cls = rpn_loss_cls.mean().item()
                     loss_rpn_box = rpn_loss_box.mean().item()
-                    loss_rcnn_cls_1 = RCNN_loss_cls_1.mean().item()
-                    loss_rcnn_box_1 = RCNN_loss_bbox_1.mean().item()
+                    loss_rcnn_cls = RCNN_loss_cls.mean().item()
+                    loss_rcnn_box = RCNN_loss_bbox.mean().item()
                     fg_cnt = torch.sum(rois_label.data.ne(0))
                     bg_cnt = rois_label.data.numel() - fg_cnt
                 else:
                     loss_rpn_cls = rpn_loss_cls.item()
                     loss_rpn_box = rpn_loss_box.item()
-                    loss_rcnn_cls_1 = RCNN_loss_cls_1.item()
-                    loss_rcnn_box_1 = RCNN_loss_bbox_1.item()
-                    loss_rcnn_cls_2 = RCNN_loss_cls_2.item()
-                    loss_rcnn_box_2 = RCNN_loss_bbox_2.item()
+                    loss_rcnn_cls = RCNN_loss_cls.item()
+                    loss_rcnn_box = RCNN_loss_bbox.item()
                     fg_cnt = torch.sum(rois_label.data.ne(0))
                     bg_cnt = rois_label.data.numel() - fg_cnt
-                    adv_cls_loss = adv_cls_loss.item()
-                    adv_bbox_loss = adv_bbox_loss.item()
 
-                print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, loss adv: %.4f, lr: %.2e" \
-                      % (args.session, epoch, step, iters_per_epoch, loss_temp, loss_temp_adv, lr))
+                print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, lr: %.2e" \
+                      % (args.session, epoch, step, iters_per_epoch, loss_temp, lr))
                 print("\t\t\tfg/bg=(%d/%d), time cost: %f" % (fg_cnt, bg_cnt, end - start))
                 print(
-                    "\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls_1: %.4f, rcnn_box_1 %.4f, rcnn_cls_2 %.4f, rcnn_box_2 %.4f, adv cls loss %.4f, adv bbox loss %.4f" \
-                    % (loss_rpn_cls, loss_rpn_box, loss_rcnn_cls_1, loss_rcnn_box_1, loss_rcnn_cls_2, loss_rcnn_box_2, adv_cls_loss, adv_bbox_loss))
-
-                # print("\t\t\ttime cost: %f" % (end - start))
-                # print(
-                #     "\t\t\tadv cls loss %.4f, adv bbox loss %.4f" \
-                #     % (adv_cls_loss, adv_bbox_loss))
+                    "\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f" \
+                    % (loss_rpn_cls, loss_rpn_box, loss_rcnn_cls, loss_rcnn_box))
 
                 if args.use_tfboard:
                     info = {
                         'loss': loss_temp,
-                        'loss_adv': loss_temp_adv,
                         'loss_rpn_cls': loss_rpn_cls,
                         'loss_rpn_box': loss_rpn_box,
-                        'loss_rcnn_cls_1': loss_rcnn_cls_1,
-                        'loss_rcnn_box_1': loss_rcnn_box_1,
-                        'loss_rcnn_cls_2': loss_rcnn_cls_2,
-                        'loss_rcnn_box_2': loss_rcnn_box_2,
-                        'adv_cls_loss':adv_cls_loss,
-                        'adv_bbox_loss':adv_bbox_loss
+                        'loss_rcnn_cls': loss_rcnn_cls,
+                        'loss_rcnn_box': loss_rcnn_box,
                     }
-                    logger.add_scalars("logs_s_{}/mcd-PT".format(args.session), info,
+                    logger.add_scalars("pf", info,
                                        (epoch - 1) * iters_per_epoch + step)
 
                 loss_temp = 0
-                loss_temp_adv = 0
                 start = time.time()
 
-            if step % 1000 == 0:
-                save_name = os.path.join(output_dir,
-                                         'mcd_pure_target_{}_epoch_{}_step_{}.pth'.format(args.dataset, epoch, step))
+            if step % 500 == 0:
+                save_name = os.path.join(output_dir, '{}_{}_.pth'.format(epoch, step))
                 save_checkpoint({
                     'session': args.session,
                     'epoch': epoch + 1,
-                    'model': fasterRCNN.module.state_dict() if args.mGPUs else fasterRCNN.state_dict(),
+                    'model': student.module.state_dict() if args.mGPUs else student.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'pooling_mode': cfg.POOLING_MODE,
                     'class_agnostic': args.class_agnostic,
                 }, save_name)
                 print('save model: {}'.format(save_name))
-        save_name = os.path.join(output_dir,
-                                 'mcd_pure_target_{}_epoch_{}.pth'.format(args.dataset, epoch))
-        save_checkpoint({
-            'session': args.session,
-            'epoch': epoch + 1,
-            'model': fasterRCNN.module.state_dict() if args.mGPUs else fasterRCNN.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'pooling_mode': cfg.POOLING_MODE,
-            'class_agnostic': args.class_agnostic,
-        }, save_name)
-        print('save model: {}'.format(save_name))
+
+                os.environ['CUDA_VISIBLE_DEVICES']='6'
+                my_env = os.environ.copy()
+                my_env["PATH"] = "/data/fuminghao/anaconda3/envs/da_detc/bin:" + my_env["PATH"]
+                child = subprocess.Popen(
+                    ['python', 'test_net.py', '--dataset', 'cityscape_car', '--load_name',
+                     save_name, '--fd', 'rand'],
+                    env=my_env,
+                    stdout=subprocess.PIPE
+                )
 
     if args.use_tfboard:
         logger.close()

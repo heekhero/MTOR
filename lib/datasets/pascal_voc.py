@@ -35,6 +35,18 @@ try:
 except NameError:
     xrange = range  # Python 3
 
+import logging
+
+logger = logging.getLogger('log')
+handler = logging.FileHandler(os.path.abspath(os.path.join(__file__, '..', '..', '..', 'info_pascal.out')))
+logger.setLevel(logging.INFO)
+handler.setLevel(logging.INFO)
+
+formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s')
+handler.setFormatter(formatter)
+
+logger.addHandler(handler)
+
 # <<<< obsolete
 
 
@@ -125,7 +137,6 @@ class pascal_voc(imdb):
         print(cache_file)
         if os.path.exists(cache_file):
             with open(cache_file, 'rb') as fid:
-
                 roidb = pickle.load(fid)
             print('{} gt roidb loaded from {}'.format(self.name, cache_file))
             return roidb
@@ -299,7 +310,7 @@ class pascal_voc(imdb):
                                 format(index, dets[k, -1],
                                        dets[k, 0] + 1, dets[k, 1] + 1,
                                        dets[k, 2] + 1, dets[k, 3] + 1))
-    def _do_python_eval(self, output_dir='output'):
+    def _do_python_eval(self, output_dir='output', epoch=0, step=0):
         annopath = os.path.join(
             self._devkit_path,
             'VOC' + self._year,
@@ -333,6 +344,8 @@ class pascal_voc(imdb):
                 pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
         with open(os.path.join(output_dir, 'eval_result.txt'), 'a') as result_f:
             result_f.write('Mean AP = {:.4f}'.format(np.mean(aps)) + '\n')
+
+        logger.info('Epoch : {}  Step : {}  mAP : {:.4}'.format(epoch, step, np.mean(aps).item()))
         print('Mean AP = {:.4f}'.format(np.mean(aps)))
         print('~~~~~~~~')
         print('Results:')
@@ -363,9 +376,9 @@ class pascal_voc(imdb):
         print('Running:\n{}'.format(cmd))
         status = subprocess.call(cmd, shell=True)
 
-    def evaluate_detections(self, all_boxes, output_dir):
+    def evaluate_detections(self, all_boxes, output_dir, epoch, step):
         self._write_voc_results_file(all_boxes)
-        self._do_python_eval(output_dir)
+        self._do_python_eval(output_dir, epoch=epoch, step=step)
         if self.config['matlab_eval']:
             self._do_matlab_eval(output_dir)
         if self.config['cleanup']:

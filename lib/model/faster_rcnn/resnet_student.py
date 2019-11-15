@@ -3,7 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 from model.utils.config import cfg
-from model.faster_rcnn.faster_rcnn import _fasterRCNN
+from model.faster_rcnn.faster_rcnn_student import _fasterRCNN
 
 import torch
 import torch.nn as nn
@@ -234,7 +234,7 @@ def resnet152(pretrained=False):
     model.load_state_dict(model_zoo.load_url(model_urls['resnet152']))
   return model
 
-class resnet(_fasterRCNN):
+class resnet_student(_fasterRCNN):
   def __init__(self, classes, num_layers=101, pretrained=False, class_agnostic=False):
     self.model_path = '/data/fuminghao/data/model/resnet101_caffe.pth'
     self.dout_base_model = 1024
@@ -255,18 +255,14 @@ class resnet(_fasterRCNN):
     self.RCNN_base = nn.Sequential(resnet.conv1, resnet.bn1,resnet.relu,
       resnet.maxpool,resnet.layer1,resnet.layer2,resnet.layer3)
 
-    self.RCNN_top_1 = nn.Sequential(resnet.layer4)
-    self.RCNN_top_2 = nn.Sequential(resnet.layer4)
+    self.RCNN_top = nn.Sequential(resnet.layer4)
 
-    self.RCNN_cls_score_1 = nn.Linear(2048, self.n_classes)
-    self.RCNN_cls_score_2 = nn.Linear(2048, self.n_classes)
+    self.RCNN_cls_score = nn.Linear(2048, self.n_classes)
 
     if self.class_agnostic:
-      self.RCNN_bbox_pred_1 = nn.Linear(2048, 4)
-      self.RCNN_bbox_pred_2 = nn.Linear(2048, 4)
+      self.RCNN_bbox_pred = nn.Linear(2048, 4)
     else:
-      self.RCNN_bbox_pred_1 = nn.Linear(2048, 4 * self.n_classes)
-      self.RCNN_bbox_pred_2 = nn.Linear(2048, 4 * self.n_classes)
+      self.RCNN_bbox_pred = nn.Linear(2048, 4 * self.n_classes)
 
     # Fix blocks
     for p in self.RCNN_base[0].parameters(): p.requires_grad=False
@@ -284,6 +280,7 @@ class resnet(_fasterRCNN):
       classname = m.__class__.__name__
       if classname.find('BatchNorm') != -1:
         for p in m.parameters(): p.requires_grad=False
+
     def normal_init(m):
       classname = m.__class__.__name__
       if classname.find('Linear') != -1 or classname.find('Conv') != -1:
@@ -293,9 +290,7 @@ class resnet(_fasterRCNN):
           init.constant_(m.bias, 0)
 
     self.RCNN_base.apply(set_bn_fix)
-    self.RCNN_top_1.apply(set_bn_fix)
-    self.RCNN_top_2.apply(set_bn_fix)
-    self.RCNN_top_2.apply(normal_init)
+    self.RCNN_top.apply(set_bn_fix)
 
   def train(self, mode=True):
     # Override train so that the training mode is set as we want
@@ -303,6 +298,7 @@ class resnet(_fasterRCNN):
     if mode:
       # Set fixed blocks to be in eval mode
       self.RCNN_base.eval()
+      self.RCNN_base[4].train()
       self.RCNN_base[5].train()
       self.RCNN_base[6].train()
 
@@ -312,14 +308,7 @@ class resnet(_fasterRCNN):
           m.eval()
 
       self.RCNN_base.apply(set_bn_eval)
-      self.RCNN_top_1.apply(set_bn_eval)
-      self.RCNN_top_2.apply(set_bn_eval)
+      self.RCNN_top.apply(set_bn_eval)
 
-  def _head_to_tail(self, pool5, tar=0):
-    if tar == 0:
-      fc7 = self.RCNN_top_1(pool5).mean(3).mean(2)
-    elif tar == 1:
-      fc7 = self.RCNN_top_2(pool5).mean(3).mean(2)
-    else:
-      raise NotImplementedError
-    return fc7
+  def _head_to_tail(self, pool5):
+    return self.RCNN_top(pool5).mean(3).mean(2)

@@ -10,6 +10,8 @@ import pdb
 import random
 from torch.utils.data.sampler import Sampler
 
+import torch.nn.init as init
+
 def coral(source, target):
     d = source.data.shape[1]
 
@@ -265,3 +267,42 @@ def compare_grid_sample():
     pdb.set_trace()
 
     delta = (grad_input_off.data - grad_input_stn).sum()
+
+def relation_matrix(f):
+    f = f.float()
+    N = f.size(0)
+
+    # relation = f.new(N, N).fill_(0)
+    # for i in range(N):
+    #     for j in range(N):
+    #         relation[i, j] = f[i].dot(f[j]) / (f[i].norm() * f[j].norm())
+
+    f1 = f.clone()
+    f2 = f.clone()
+
+    f1 = f1.reshape(N, 1, -1).expand(N, N, -1)
+    f2 = f2.reshape(1, N, -1).expand(N, N, -1)
+
+    elem = torch.mul(f1, f2).sum(dim=2)
+    f1_norm = torch.norm(f1, dim=2)
+    f2_norm = torch.norm(f2, dim=2)
+
+    relation = elem / torch.mul(f1_norm, f2_norm)
+    return relation
+
+def guide_matrix(p):
+    N = p.size(1)
+    pseudo_labels = torch.argmax(p.squeeze(0), dim=1)
+
+    pl_1 = pseudo_labels.detach().clone().reshape(N, 1).expand(N, N)
+    pl_2 = pseudo_labels.detach().clone().reshape(1, N).expand(N, N)
+
+    M = (pl_1 == pl_2).float()
+
+    return M
+
+def zero_params(m):
+    if hasattr(m, 'weight') and m.weight is not None:
+        init.constant_(m.weight, 0)
+    if hasattr(m, 'bias') and m.bias is not None:
+        init.constant_(m.bias, 0)

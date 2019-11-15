@@ -22,10 +22,10 @@ __D.PASCALWATER = "/VOCdevkit"
 #For these datasets, the directories under the path will be Annotations  ImageSets  JPEGImages."
 __D.CLIPART = "/data/fuminghao/data/clipart"
 __D.WATER = "/watercolor"
-__D.SIM10K = "Sim10k/VOC2012"
-__D.CITYSCAPE_CAR = "/VOC2007"
-__D.CITYSCAPE = "VOC2007"
-__D.FOGGYCITY = "VOC2007"
+__D.SIM10K = "/data/fuminghao/data/Sim10k"
+__D.CITYSCAPE_CAR = "/data/fuminghao/data/cityscapes"
+__D.CITYSCAPE = "/data/fuminghao/data/cityscapes"
+__D.FOGGYCITY = "/data/fuminghao/data/foggy_city"
 
 
 def _merge_a_into_b(a, b):

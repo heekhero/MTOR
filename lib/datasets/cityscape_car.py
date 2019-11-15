@@ -20,6 +20,7 @@ import uuid
 import scipy.io as sio
 import xml.etree.ElementTree as ET
 import pickle
+import logging
 from .imdb import imdb
 from .imdb import ROOT_DIR
 from . import ds_utils
@@ -35,10 +36,10 @@ try:
 except NameError:
     xrange = range  # Python 3
 
-# <<<< obsolete
 
 class cityscape_car(imdb):
     def __init__(self, image_set, devkit_path=None):
+
         imdb.__init__(self, 'cityscape_car_'+ image_set)
         self._year = 2007
         self._image_set = image_set
@@ -115,18 +116,18 @@ class cityscape_car(imdb):
 
         This function loads/saves from/to a cache file to speed up future calls.
         """
-        cache_file = os.path.join(self.cache_path, self.name + '_gt_roidb.pkl')
-        if os.path.exists(cache_file):
-            with open(cache_file, 'rb') as fid:
-                roidb = pickle.load(fid)
-            print('{} gt roidb loaded from {}'.format(self.name, cache_file))
-            return roidb
+        # cache_file = os.path.join(self.cache_path, self.name + '_gt_roidb.pkl')
+        # if os.path.exists(cache_file):
+        #     with open(cache_file, 'rb') as fid:
+        #         roidb = pickle.load(fid)
+        #     print('{} gt roidb loaded from {}'.format(self.name, cache_file))
+        #     return roidb
 
         gt_roidb = [self._load_pascal_annotation(index)
                     for index in self.image_index]
-        with open(cache_file, 'wb') as fid:
-            pickle.dump(gt_roidb, fid, pickle.HIGHEST_PROTOCOL)
-        print('wrote gt roidb to {}'.format(cache_file))
+        # with open(cache_file, 'wb') as fid:
+        #     pickle.dump(gt_roidb, fid, pickle.HIGHEST_PROTOCOL)
+        # print('wrote gt roidb to {}'.format(cache_file))
 
         return gt_roidb
 
@@ -287,7 +288,18 @@ class cityscape_car(imdb):
                                        dets[k, 0] + 1, dets[k, 1] + 1,
                                        dets[k, 2] + 1, dets[k, 3] + 1))
 
-    def _do_python_eval(self, output_dir='output'):
+    def _do_python_eval(self, output_dir='output', epoch=0, step=0, fd=None):
+
+        logger = logging.getLogger(fd)
+        handler = logging.FileHandler(os.path.abspath(os.path.join(__file__, '..', '..', '..', 'mAP_{}.out'.format(fd))))
+        logger.setLevel(logging.INFO)
+        handler.setLevel(logging.INFO)
+
+        formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s')
+        handler.setFormatter(formatter)
+
+        logger.addHandler(handler)
+
         annopath = os.path.join(
             self._devkit_path,
             'Annotations',
@@ -313,6 +325,8 @@ class cityscape_car(imdb):
                 use_07_metric=use_07_metric)
             aps += [ap]
             print('AP for {} = {:.4f}'.format(cls, ap))
+            logger.info('Epoch : {}  Step : {}  AP for {} : {:.4}'.format(epoch, step, cls, ap.item()))
+
             with open(os.path.join(output_dir, cls + '_pr.pkl'), 'wb') as f:
                 pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
         with open(os.path.join(output_dir, 'eval_result.txt'), 'a') as result_f:
@@ -347,9 +361,9 @@ class cityscape_car(imdb):
         print('Running:\n{}'.format(cmd))
         status = subprocess.call(cmd, shell=True)
 
-    def evaluate_detections(self, all_boxes, output_dir):
+    def evaluate_detections(self, all_boxes, output_dir, epoch, step, fd):
         self._write_voc_results_file(all_boxes)
-        self._do_python_eval(output_dir)
+        self._do_python_eval(output_dir, epoch=epoch, step=step, fd=fd)
         if self.config['matlab_eval']:
             self._do_matlab_eval(output_dir)
         if self.config['cleanup']:
@@ -366,11 +380,3 @@ class cityscape_car(imdb):
         else:
             self.config['use_salt'] = True
             self.config['cleanup'] = True
-
-
-if __name__ == '__main__':
-    d = pascal_voc('trainval', '2007')
-    res = d.roidb
-    from IPython import embed;
-
-    embed()

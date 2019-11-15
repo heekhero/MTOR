@@ -9,10 +9,19 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train a Fast R-CNN network')
     parser.add_argument('--dataset', dest='dataset',
                         help='source training dataset',
-                        default='pascal_voc_0712', type=str)
+                        default='sim10k', type=str)
     parser.add_argument('--dataset_t', dest='dataset_t',
                         help='target training dataset',
-                        default='clipart', type=str)
+                        default='cityscape_car', type=str)
+    parser.add_argument('--emma',
+                        help='threshold of teacher network to filter the rois',
+                        default=0.7, type=float)
+    parser.add_argument('-eam',
+                        help='factor of exponentional moveing average',
+                        default=0.9, type=float)
+    parser.add_argument('--fd',
+                        help='output file seed',
+                        type=str, default='norm')
     parser.add_argument('--net', dest='net',
                         help='vgg16, res101 res50',
                         default='res101', type=str)
@@ -36,14 +45,13 @@ def parse_args():
                         help='directory to save models', default="models",
                         type=str)
     parser.add_argument('--load_name', dest='load_name',
-                        help='path to load models', default="models",
+                        help='path to load models', default="models/res101/sim10k/1_2500_.pth",
                         type=str)
     parser.add_argument('--nw', dest='num_workers',
                         help='number of worker to load data',
                         default=4, type=int)
     parser.add_argument('--cuda', dest='cuda',
                         help='whether use CUDA',
-                        type=bool,
                         default=True)
 
     parser.add_argument('--detach', dest='detach',
@@ -229,8 +237,8 @@ def set_dataset_args(args, test=False):
             args.set_cfgs = ['ANCHOR_SCALES', '[8, 16, 32]', 'ANCHOR_RATIOS', '[0.5,1,2]', 'MAX_NUM_GT_BOXES',
                                 '20']
         elif args.dataset == "clipart":
-            args.imdb_name = "clipart_trainval"
-            args.imdbval_name = "clipart_trainval"
+            args.imdb_name = "clipart_test"
+            args.imdbval_name = "clipart_test"
             args.set_cfgs = ['ANCHOR_SCALES', '[8, 16, 32]', 'ANCHOR_RATIOS', '[0.5,1,2]', 'MAX_NUM_GT_BOXES',
                              '20']
         elif args.dataset == "cityscape_car":

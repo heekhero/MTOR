@@ -13,6 +13,7 @@ import numpy as np
 import pprint
 import time
 import _init_paths
+import torch.cuda as cuda
 
 import torch
 
@@ -38,8 +39,9 @@ lr = cfg.TRAIN.LEARNING_RATE
 momentum = cfg.TRAIN.MOMENTUM
 weight_decay = cfg.TRAIN.WEIGHT_DECAY
 
-if __name__ == '__main__':
+# os.environ['CUDA_VISIBLE_DEVICES']='5'
 
+if __name__ == '__main__':
     args = parse_args()
 
     print('Called with args:')
@@ -65,7 +67,7 @@ if __name__ == '__main__':
 
     # initilize the network here.
     from model.faster_rcnn.vgg16 import vgg16
-    from model.faster_rcnn.resnet import resnet
+    from model.faster_rcnn.resnet_student import resnet_student as resnet
 
     if args.net == 'vgg16':
         fasterRCNN = vgg16(imdb.classes, pretrained=True, class_agnostic=args.class_agnostic)
@@ -124,7 +126,7 @@ if __name__ == '__main__':
 
     output_dir = get_output_dir(imdb, save_name)
     dataset = roibatchLoader(roidb, ratio_list, ratio_index, 1, \
-                             imdb.num_classes, training=False, normalize=False)
+                             imdb.num_classes, training=False)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1,
                                              shuffle=False, num_workers=0,
                                              pin_memory=True)
@@ -137,7 +139,6 @@ if __name__ == '__main__':
     fasterRCNN.eval()
     empty_array = np.transpose(np.array([[], [], [], [], []]), (1, 0))
     for i in range(num_images):
-
         data = next(data_iter)
         im_data.resize_(data[0].size()).copy_(data[0])
         # print(data[0].size())
@@ -224,7 +225,10 @@ if __name__ == '__main__':
         pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
 
     print('Evaluating detections')
-    imdb.evaluate_detections(all_boxes, output_dir)
+    model_name=args.load_name.split('/')[-1]
+    epoch = int(model_name.split('_')[0])
+    step = int(model_name.split('_')[1])
+    imdb.evaluate_detections(all_boxes, output_dir, epoch, step, args.fd)
 
     end = time.time()
     print("test time: %0.4fs" % (end - start))
