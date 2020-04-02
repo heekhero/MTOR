@@ -49,9 +49,10 @@ def prep_im_for_blob(im, pixel_means, target_size, target=False):
     im = cv2.resize(im, None, None, fx=im_scale, fy=im_scale,
                     interpolation=cv2.INTER_LINEAR)
     if target:
-        s = np.clip((im + np.random.uniform(0, 30)), 0, 255)
-        t = np.expand_dims(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), axis=2)
-        t = np.concatenate((t, t, t), axis=-1)
+        s = im + np.random.randn(im.shape[0], im.shape[1], im.shape[2]) * 30.0
+        # t = np.expand_dims(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), axis=2)
+        # t = np.concatenate((t, t, t), axis=-1)
+        t = im + float(np.random.uniform(0, 100.0))
         return s, t, im_scale
     return im, im_scale
 

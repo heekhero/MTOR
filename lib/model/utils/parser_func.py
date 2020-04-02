@@ -16,12 +16,21 @@ def parse_args():
     parser.add_argument('--emma',
                         help='threshold of teacher network to filter the rois',
                         default=0.7, type=float)
-    parser.add_argument('-eam',
+    parser.add_argument('-alpha',
                         help='factor of exponentional moveing average',
-                        default=0.9, type=float)
+                        default=0.98, type=float)
+    parser.add_argument('-lamb',
+                        help='factor to leverage the regularization loss and source detection loss',
+                        default=1, type=float)
     parser.add_argument('--fd',
                         help='output file seed',
                         type=str, default='norm')
+    parser.add_argument('--r', dest='resume',
+                        help='resume checkpoint or not',
+                        default=False, type=bool)
+    parser.add_argument('--load_name', dest='load_name',
+                        help='path to load models', default="models/res101/sim10k/3_4000_.pth",
+                        type=str)
     parser.add_argument('--net', dest='net',
                         help='vgg16, res101 res50',
                         default='res101', type=str)
@@ -44,9 +53,6 @@ def parse_args():
     parser.add_argument('--save_dir', dest='save_dir',
                         help='directory to save models', default="models",
                         type=str)
-    parser.add_argument('--load_name', dest='load_name',
-                        help='path to load models', default="models/res101/sim10k/1_2500_.pth",
-                        type=str)
     parser.add_argument('--nw', dest='num_workers',
                         help='number of worker to load data',
                         default=4, type=int)
@@ -54,18 +60,6 @@ def parse_args():
                         help='whether use CUDA',
                         default=True)
 
-    parser.add_argument('--detach', dest='detach',
-                        help='whether use detach',
-                        action='store_false')
-    parser.add_argument('--ef', dest='ef',
-                        help='whether use exponential focal loss',
-                        action='store_true')
-    parser.add_argument('--lc', dest='lc',
-                        help='whether use context vector for pixel level',
-                        default=True)
-    parser.add_argument('--gc', dest='gc',
-                        help='whether use context vector for global level',
-                        default=True)
     parser.add_argument('--ls', dest='large_scale',
                         help='whether use large imag scale',
                         action='store_true')
@@ -75,9 +69,6 @@ def parse_args():
     parser.add_argument('--bs', dest='batch_size',
                         help='batch_size',
                         default=1, type=int)
-    parser.add_argument('--cag', dest='class_agnostic',
-                        help='whether perform class_agnostic bbox regression',
-                        action='store_true')
 
     # config optimization
     parser.add_argument('--o', dest='optimizer',
@@ -95,28 +86,13 @@ def parse_args():
     parser.add_argument('--lr_decay_gamma', dest='lr_decay_gamma',
                         help='learning rate decay ratio',
                         default=0.1, type=float)
-    parser.add_argument('--s', dest='session',
-                        help='training session',
-                        default=1, type=int)
-    parser.add_argument('--r', dest='resume',
-                        help='resume checkpoint or not',
-                        default=False, type=bool)
-    parser.add_argument('--checksession', dest='checksession',
-                        help='checksession to load model',
-                        default=1, type=int)
-    parser.add_argument('--checkepoch', dest='checkepoch',
-                        help='checkepoch to load model',
-                        default=1, type=int)
-    parser.add_argument('--checkpoint', dest='checkpoint',
-                        help='checkpoint to load model',
-                        default=0, type=int)
-    # log and diaplay
+    parser.add_argument('--cag', dest='class_agnostic',
+                        help='whether perform class_agnostic bbox regression',
+                        action='store_true')
+
     parser.add_argument('--use_tfb', dest='use_tfboard',
                         help='whether use tensorboard',
                         action='store_true')
-    parser.add_argument('--image_dir', dest='image_dir',
-                        help='directory to load images for demo',
-                        default="images")
     args = parser.parse_args()
     return args
 

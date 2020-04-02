@@ -8,25 +8,25 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import _init_paths
 import os
 import pdb
 import pprint
-import subprocess
 import time
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from matplotlib import pyplot as plt
 from torch.autograd import Variable
 
 from model.utils.config import cfg, cfg_from_file, cfg_from_list
-from model.utils.net_utils import adjust_learning_rate, save_checkpoint, sampler, relation_matrix, guide_matrix, zero_params
+from model.utils.net_utils import adjust_learning_rate, sampler, relation_matrix, guide_matrix
 from model.utils.parser_func import parse_args, set_dataset_args
 from roi_data_layer.roibatchLoader import roibatchLoader
 from roi_data_layer.roidb import combined_roidb
 
-os.environ['CUDA_VISIBLE_DEVICES']='1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '5'
 
 if __name__ == '__main__':
 
@@ -135,7 +135,6 @@ if __name__ == '__main__':
             else:
                 params += [{'params': [value], 'lr': lr, 'weight_decay': cfg.TRAIN.WEIGHT_DECAY}]
 
-
     if args.optimizer == "adam":
         lr = lr * 0.1
         optimizer = torch.optim.Adam(params)
@@ -157,11 +156,12 @@ if __name__ == '__main__':
 
     if args.use_tfboard:
         from tensorboardX import SummaryWriter
+
         logger = SummaryWriter("logs")
 
     count_iter = 0
     loss_temp = 0
-    flag= False
+    flag = False
 
     for p in teacher.parameters():
         p.requires_grad = False
@@ -190,7 +190,7 @@ if __name__ == '__main__':
                 data_t = next(data_iter_t)
             except:
                 data_iter_t = iter(dataloader_t)
-                data_t = next (data_iter_t)
+                data_t = next(data_iter_t)
 
             count_iter += 1
 
@@ -204,20 +204,37 @@ if __name__ == '__main__':
                    + RCNN_loss_cls.mean() + RCNN_loss_bbox.mean()
             loss_temp += loss.item()
 
-
             s.resize_(data_t[0].size()).copy_(data_t[0])
             t.resize_(data_t[1].size()).copy_(data_t[1])
             im_info.resize_(data_t[2].size()).copy_(data_t[2])
             gt_boxes.resize_(1, 1, 5).zero_()
             num_boxes.resize_(1).zero_()
 
-            # if epoch > 2:
             rois_t, f_t, p_t = teacher(t, im_info, gt_boxes, num_boxes)
+
+            img_s = np.array(s[0].detach().cpu()).transpose((1, 2, 0))
+            img_s += cfg.PIXEL_MEANS
+            # img_t = img_t.astype(np.uint8)
+            cv2.imwrite('s.jpg', img_s)
+
+            img_t = np.array(t[0].detach().cpu()).transpose((1, 2, 0))
+            img_t += cfg.PIXEL_MEANS
+            # img_t = img_t.astype(np.uint8)
+            cv2.imwrite('t.jpg', img_t)
+            img_t = plt.imread('t.jpg')
+            rois_t_draw = rois_t[0, :, 1:]
+            for i in range(rois_t_draw.size(0)):
+                if rois_t_draw[i, 0] == rois_t_draw[i, 2]:
+                    continue
+                cv2.rectangle(img_t,
+                              (int(rois_t_draw[i, 0].item()), int(rois_t_draw[i, 1].item())),
+                              (int(rois_t_draw[i, 2].item()), int(rois_t_draw[i, 3].item())), (0, 0, 204), 3)
+            cv2.imwrite('t.jpg', img_t)
             RCL = 0
             EGL = 0
             AGL = 0
             if rois_t.size(1) != 0:
-                f_s, p_s = student(s, im_info, gt_boxes, num_boxes, t_rois = rois_t)
+                f_s, p_s = student(s, im_info, gt_boxes, num_boxes, t_rois=rois_t)
 
                 RCL = F.mse_loss(p_s, p_t.squeeze(0))
 
@@ -228,7 +245,7 @@ if __name__ == '__main__':
 
                 M = guide_matrix(p_t)
 
-                AGL = torch.sum((1 - emma_s) * M) / max(torch.sum(M), 1)
+                AGL = torch.sum((1 - emma_s) * M) / torch.sum(M)
             loss += (RCL + EGL + AGL) * args.lamb
             optimizer.zero_grad()
             loss.backward()
@@ -272,8 +289,8 @@ if __name__ == '__main__':
                         RCL = RCL
                         EGL = EGL
                         print('')
-                print("[epoch %2d][iter %4d/%4d] loss: %.4f, lr: %.2e" \
-                      % (epoch, step, iters_per_epoch, loss_temp, lr))
+                print("[session %d][epoch %2d][iter %4d/%4d] loss: %.4f, lr: %.2e" \
+                      % (args.session, epoch, step, iters_per_epoch, loss_temp, lr))
                 print("\t\t\tfg/bg=(%d/%d), time cost: %f" % (fg_cnt, bg_cnt, end - start))
                 print(
                     "\t\t\trpn_cls: %.4f, rpn_box: %.4f, rcnn_cls: %.4f, rcnn_box %.4f, RCL %.4f, AGL %.4f, EGL %.4f" \
@@ -288,33 +305,34 @@ if __name__ == '__main__':
                         'loss_rcnn_box': loss_rcnn_box,
                     }
                     if AGL != 0:
-                        info = dict(info, **{'RCL':RCL, 'AGL':AGL, 'EGL':EGL})
+                        info = dict(info, **{'RCL': RCL, 'AGL': AGL, 'EGL': EGL})
                     logger.add_scalars("pf", info,
                                        (epoch - 1) * iters_per_epoch + step)
 
                 loss_temp = 0
                 start = time.time()
 
-            if step % 500 == 0:
-                save_name = os.path.join(output_dir, '{}_{}_.pth'.format(epoch, step))
-                save_checkpoint({
-                    'epoch': epoch + 1,
-                    'model': student.module.state_dict() if args.mGPUs else student.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'pooling_mode': cfg.POOLING_MODE,
-                    'class_agnostic': args.class_agnostic,
-                }, save_name)
-                print('save model: {}'.format(save_name))
-
-                os.environ['CUDA_VISIBLE_DEVICES']='6'
-                my_env = os.environ.copy()
-                my_env["PATH"] = "/data/fuminghao/anaconda3/envs/da_detc/bin:" + my_env["PATH"]
-                child = subprocess.Popen(
-                    ['python', 'test_net.py', '--dataset', 'cityscape_car', '--load_name',
-                     save_name, '--fd', 'rand'],
-                    env=my_env,
-                    stdout=subprocess.PIPE
-                )
+            # if step % 500 == 0:
+            #     save_name = os.path.join(output_dir, '{}_{}_.pth'.format(epoch, step))
+            #     save_checkpoint({
+            #         'session': args.session,
+            #         'epoch': epoch + 1,
+            #         'model': student.module.state_dict() if args.mGPUs else student.state_dict(),
+            #         'optimizer': optimizer.state_dict(),
+            #         'pooling_mode': cfg.POOLING_MODE,
+            #         'class_agnostic': args.class_agnostic,
+            #     }, save_name)
+            #     print('save model: {}'.format(save_name))
+            #
+            #     os.environ['CUDA_VISIBLE_DEVICES']='6'
+            #     my_env = os.environ.copy()
+            #     my_env["PATH"] = "/data/fuminghao/anaconda3/envs/da_detc/bin:" + my_env["PATH"]
+            #     child = subprocess.Popen(
+            #         ['python', 'test_net.py', '--dataset', 'cityscape_car', '--load_name',
+            #          save_name, '--fd', 'rand'],
+            #         env=my_env,
+            #         stdout=subprocess.PIPE
+            #     )
 
     if args.use_tfboard:
         logger.close()

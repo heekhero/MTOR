@@ -69,7 +69,7 @@ class _fasterRCNN(nn.Module):
         post_inds = self.rois_filter(cls_prob, cfg.TRAIN.TEACHER_ROI_THRESHOLD)
 
         if len(post_inds) > 100:
-            print(len(post_inds))
+            # print(len(post_inds))
             post_inds = post_inds[torch.randperm(len(post_inds))[:100]]
 
         post_rois = rois[:, post_inds, :]
